@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  vault:
+    image: vault:1.5.4
+    ports:
+      - 8200:8200
+    environment:
+      - "SKIP_SETCAP=true"
+      - "VAULT_ADDR=http://127.0.0.1:8200"
+      - "VAULT_DEV_ROOT_TOKEN_ID=root"
+      - "VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200"
+    command: server -dev
+  vault_seed:
+    image: vault:1.5.4
+    environment:
+      - "VAULT_TOKEN=root"
+      - "VAULT_ADDR=http://vault:8200"
+    entrypoint: sh -c
+    command: 
+      # docker-compose interprets the string, so $ must be escaped
+      # FIXME: web approle still valid, I want it expired after one use
+      - |
+        echo "trying to connect to vault..."
+        while ! nc -z vault 8200; do
+          sleep 1
+          echo "retrying..."
+        done
+        echo "connection to vault successful"
+
+        AGENT_IP=`getent hosts agent | awk '{ print $$1 }'`
+        vault kv put secret/web \
+          key1="this is some secret text" \
+          key2="this is some more secret text"
+        vault policy write web-kv-reader - <<EOF
+          path "secret/data/web" {
+            capabilities = ["list", "read"]
+          }
+        EOF
+        vault auth enable approle
+        vault write auth/approle/role/web \
+          role_id="web" \
+          bind_secret_id=false \
+          secret_id_bound_cidrs=$${AGENT_IP}/32 \
+          secret_id_ttl=30s \
+          secret_id_num_uses=1 \
+          token_num_uses=3 \
+          token_period=0 \
+          token_explicit_max_ttl=30s \
+          token_policies="web-kv-reader" \
+          token_bound_cidrs=$${AGENT_IP}/32 \
+  agent:
+    image: vault:1.5.4
+    environment:
+      - "SKIP_SETCAP=true"
+    volumes:
+      - type: bind
+        source: ./agent/role_id.txt
+        target: /etc/vault/agent/role/id
+        read_only: true
+      - type: volume
+        source: templateOutputDir
+        target: /vault/data/templateOutput
+        read_only: false
+      - type: bind
+        source: ./agent/config/config.hcl
+        target: /etc/vault/agent/config/config.hcl
+        read_only: true
+    entrypoint: sh -c
+    command: 
+      - |
+        chmod -R 0777 /vault/data/templateOutput
+        vault agent -config=/etc/vault/agent/config/config.hcl
+  web:
+    image: nginx:1.19.2
+    ports:
+      - "8080:80"
+    volumes:
+      - type: bind
+        source: ./web/config/nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+      - type: volume
+        source: templateOutputDir
+        target: /www/data/
+        read_only: true
+
+volumes:
+  templateOutputDir:
