@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  vault:
+    image: vault:1.5.4
+    ports:
+      - 8200:8200
+    environment:
+      - "SKIP_SETCAP=true"
+      - "VAULT_ADDR=http://127.0.0.1:8200"
+    volumes:
+      - type: bind
+        source: ./vault/config/config.hcl
+        target: /etc/vault/config/config.hcl
+        read_only: true
+      - type: bind
+        source: ./keys/vault/
+        target: /vault/tls/
+        read_only: true
+      - type: bind
+        source: ./keys/ca/ca.cert
+        target: /vault/ca/ca.cert
+        read_only: true
+    command: server -config /etc/vault/config/config.hcl
