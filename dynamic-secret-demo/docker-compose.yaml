@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  vault:
+    image: vault:1.5.4
+    ports:
+      - 8200:8200
+    environment:
+      - "SKIP_SETCAP=true"
+      - "VAULT_ADDR=http://127.0.0.1:8200"
+      - "VAULT_DEV_ROOT_TOKEN_ID=root"
+      - "VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200"
+    command: server -dev
+  postgres:
+    image: postgres:13.0-alpine
+    ports:
+      - 5432:5432
+    environment:
+      - "POSTGRES_PASSWORD=dbpassword"
+      - "VAULT_ADDR=http://vault:8200"
+      - "VAULT_TOKEN=root"
+      - "DB_NAME=vault"
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d
+  vault_connect_postgres:
+    image: vault:1.5.4
+    environment:
+      - "POSTGRES_PASSWORD=dbpassword"
+      - "VAULT_ADDR=http://vault:8200"
+      - "VAULT_TOKEN=root"
+      - "DB_NAME=vault"
+    entrypoint: sh -c
+    command:
+      - |
+        echo "let postgres init"
+        sleep 5
+        
+        vault secrets enable database
+        vault write database/config/postgresql \
+              plugin_name=postgresql-database-plugin \
+              connection_url="postgresql://{{username}}:{{password}}@postgres:5432/postgres?sslmode=disable" \
+              allowed_roles="vault-rw,vault-ro" \
+              username="postgres" \
+              password="$$POSTGRES_PASSWORD"
+        
+        cat > role-rw.sql <<EOF
+          CREATE ROLE "{{name}}"
+                 WITH LOGIN
+                 PASSWORD '{{password}}'
+                 VALID UNTIL '{{expiration}}'
+                 NOINHERIT
+          ;
+          GRANT ALL ON DATABASE "$$DB_NAME" TO "{{name}}";
+        EOF
+        
+        vault write database/roles/vault-rw \
+              db_name=postgresql \
+              creation_statements=@role-rw.sql \
+              default_ttl=1h \
+              max_ttl=24h
+
+        cat > role-ro.sql <<EOF
+          CREATE ROLE "{{name}}"
+                 WITH LOGIN
+                 PASSWORD '{{password}}'
+                 VALID UNTIL '{{expiration}}'
+                 NOINHERIT
+          ;
+          GRANT CONNECT ON DATABASE "$$DB_NAME" TO "{{name}}";
+          \connect "$$DB_NAME"
+          GRANT SELECT ON ALL TABLES TO "{{name}}";
+        EOF
+        
+        vault write database/roles/vault-ro \
+              db_name=postgresql \
+              creation_statements=@role-ro.sql \
+              default_ttl=1h \
+              max_ttl=24h
