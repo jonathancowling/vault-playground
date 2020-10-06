@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  vault_root:
+    image: vault:1.5.4
+    ports:
+      - 8200:8200
+    environment:
+      - "SKIP_SETCAP=true"
+      - "VAULT_ADDR=http://127.0.0.1:8200"
+      - "VAULT_DEV_ROOT_TOKEN_ID=root"
+      - "VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200"
+    command: server -dev
+  vault:
+    image: vault:1.5.4
+    entrypoint: sh -c
+    command:
+      - |
+        echo "waiting for write to /mount/vault/token"
+        cat "/mount/vault/token"
+        while true; do
+          WRAPPED_TOKEN=`cat /mount/vault/token`
+          VAULT_TOKEN=`VAULT_ADDR=http://vault_root:8200 VAULT_TOKEN=$$WRAPPED_TOKEN vault unwrap --field token`
+          if [ "$$?" -eq "0" ]; then
+            break
+          fi
+          sleep 1
+        done
+        echo "token written initializing vault"
+
+        env VAULT_TOKEN="$$VAULT_TOKEN" vault server --config /mount/config/config.hcl
+    ports:
+      - 8201:8200
+    environment:
+      - "SKIP_SETCAP=true"
+      - "VAULT_ADDR=http://127.0.0.1:8200"
+    volumes:
+      - token:/mount/vault/
+      - type: bind
+        source: ./vault/config/config.hcl
+        target: /mount/config/config.hcl
+        read_only: true
+  vault_root_setup:
+    image: vault:1.5.4
+    environment:
+      - "VAULT_ADDR=http://vault_root:8200"
+      - "VAULT_TOKEN=root"
+    entrypoint: sh -c
+    command:
+      - |
+        echo "trying to connect to vault..."
+        while ! nc -z vault_root 8200; do
+          sleep 1
+          echo "retrying..."
+        done
+        echo "connection to vault successful"
+        
+        vault secrets enable transit
+
+        vault write -f transit/keys/autounseal
+
+        cat > autounseal.hcl <<EOF
+          path "transit/encrypt/autounseal" {
+            capabilities = [ "update" ]
+          }
+
+          path "transit/decrypt/autounseal" {
+            capabilities = [ "update" ]
+          }
+        EOF
+        vault policy write autounseal autounseal.hcl
+        vault token create \
+              -policy="autounseal" \
+              -wrap-ttl=120 \
+              -field wrapping_token \
+              > /mount/vault/token
+    volumes:
+      - token:/mount/vault
+
+
+
+volumes:
+  token:
