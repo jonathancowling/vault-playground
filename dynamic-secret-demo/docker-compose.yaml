@@ -42,6 +42,7 @@ services:
               allowed_roles="vault-rw,vault-ro" \
               username="postgres" \
               password="$$POSTGRES_PASSWORD"
+        vault write --force database/rotate-root/postgresql
         
         cat > role-rw.sql <<EOF
           CREATE ROLE "{{name}}"
